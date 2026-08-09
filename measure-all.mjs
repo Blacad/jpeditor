@@ -230,6 +230,10 @@ if (!songs.length) { console.log("testdata/ 下没找到 图片+jpwabc 的歌谱
 const rows = [];
 const sum = { a: 0, o: 0, d: 0, dc: 0, s: 0, ly: 0, lyNp: 0, al: 0, ti: 0, cr: 0 };
 for (const song of songs) {
+  // 每首重载页面：App/Score 在同一 page 里复用会串味——实测「爱是不保留」（带 |: :| 反复+两段词）
+  // 单跑 slur/歌词 100%，跟在别的歌谱后面跑就掉到 60%/42%。重载几秒的代价换基线可复现。
+  await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
   errors.length = 0;
   const mime = MIME[extname(song.img).toLowerCase()] ?? "image/jpeg";
   const b64 = Buffer.from(await readFile(song.img)).toString("base64");
