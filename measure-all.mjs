@@ -192,6 +192,12 @@ function alignAcc(gt, rec) {
   return { acc: totW ? sum / totW : (r.size ? 0 : 1), detail: parts.join("/") || "无" };
 }
 
+// 和弦：按出现顺序取 `"hx:X"` 序列（番茄文本谱原文里和弦就写成音符后的这条注释）。
+// 位置正确性由序列顺序隐含保证——和弦挂错音符会让它与相邻记号换位、Levenshtein 立刻算进去。
+function chordSeq(puText) {
+  return [...puText.matchAll(/"hx:([^"]*)"/g)].map((m) => m[1]);
+}
+
 async function findSongs() {
   const out = [];
   for (const name of (await readdir(TESTDATA, { withFileTypes: true })).filter((d) => d.isDirectory())) {
@@ -202,7 +208,9 @@ async function findSongs() {
     const gt = files.find((f) => extname(f).toLowerCase() === ".jpwabc");
     if (!img || !gt) continue;
     if (filters.length && !filters.some((f) => name.name.includes(f))) continue;
-    out.push({ name: name.name, img: join(dir, img), gt: join(dir, gt) });
+    // 和弦 GT（可选）：一份人工核对过的番茄文本谱原文。.jpwabc 装不下和弦，只能另置载体。
+    const puGt = files.includes("gt.tomato.pu") ? join(dir, "gt.tomato.pu") : null;
+    out.push({ name: name.name, img: join(dir, img), gt: join(dir, gt), puGt });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, "zh"));
 }
@@ -228,7 +236,7 @@ const songs = await findSongs();
 if (!songs.length) { console.log("testdata/ 下没找到 图片+jpwabc 的歌谱文件夹"); await browser.close(); server.close(); process.exit(0); }
 
 const rows = [];
-const sum = { a: 0, o: 0, d: 0, dc: 0, s: 0, ly: 0, lyNp: 0, al: 0, ti: 0, cr: 0 };
+const sum = { a: 0, o: 0, d: 0, dc: 0, s: 0, ly: 0, lyNp: 0, al: 0, ti: 0, cr: 0, ch: 0, chN: 0 };
 for (const song of songs) {
   // 每首重载页面：App/Score 在同一 page 里复用会串味——实测「爱是不保留」（带 |: :| 反复+两段词）
   // 单跑 slur/歌词 100%，跟在别的歌谱后面跑就掉到 60%/42%。重载几秒的代价换基线可复现。
@@ -245,8 +253,9 @@ for (const song of songs) {
       const bin = await omr.decodeToBinary(bytes, mime);
       const score = await omr.recognizeJianpu(bin, omr.paddleOcrBackend());
       const stats = { rows: score.rows.length, notes: score.rows.reduce((a, r) => a + r.nums.length, 0), bars: score.rows.reduce((a, r) => a + r.barlineXs.length, 0) };
+      const pu = omr.toPuText(score, "tomato").text;
       window.__app.importBytes(new TextEncoder().encode(omr.toMusicXml(score)), "omr.musicxml");
-      return { jpw: window.__app.getText(), stats };
+      return { jpw: window.__app.getText(), stats, pu };
     }, { b64, mime });
   } catch (e) {
     console.log(`✗ ${song.name}: 识别异常 ${String(e).slice(0, 120)}`);
@@ -267,7 +276,14 @@ for (const song of songs) {
   const ti = charAcc(stripNum(titleOf(gt)), stripNum(titleOf(rj)));
   const cr = charAcc(creditsOf(gt), creditsOf(rj));
   sum.a += a; sum.o += o; sum.d += d; sum.dc += dc; sum.s += s; sum.ly += ly.acc; sum.lyNp += lyNp.acc; sum.al += al.acc; sum.ti += ti; sum.cr += cr;
-  rows.push({ name: song.name, a, o, d, dc, gdot: dotCount(g), rdot: dotCount(r), s, sg: slurGroups(gB), sr: slurGroups(rB),
+  // 和弦：仅对备了 gt.tomato.pu 的歌谱计分（其余留空，不拉平均）。
+  let ch = null, chG = 0, chR = 0;
+  if (song.puGt) {
+    const gc = chordSeq(await readFile(song.puGt, "utf8")), rc = chordSeq(rec.pu);
+    chG = gc.length; chR = rc.length; ch = acc(gc, rc);
+    sum.ch += ch; sum.chN += 1;
+  }
+  rows.push({ name: song.name, a, o, d, dc, gdot: dotCount(g), rdot: dotCount(r), s, sg: slurGroups(gB), sr: slurGroups(rB), ch, chG, chR,
     ly: ly.acc, lyNp: lyNp.acc, lyD: ly.detail, al: al.acc, alD: al.detail, ti, cr, g: g.length, r: r.length, stats: rec.stats,
     err: errors.filter((e) => !/favicon|space too large/.test(e)).slice(0, 2) });
 }
@@ -275,20 +291,21 @@ for (const song of songs) {
 // CSV 输出：百分比保留 1 位小数（不带 % 号），字段含逗号则加引号
 const p1 = (x) => (x * 100).toFixed(1);
 const csv = (v) => { const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-const cols = ["歌谱", "音符", "八度", "附点", "附GT", "附识", "小节", "slur/tie", "slur组GT", "slur组识", "歌词", "歌词*", "对位", "标题", "词曲", "GT_token", "识_token", "行", "音", "线"];
+const cols = ["歌谱", "音符", "八度", "附点", "附GT", "附识", "小节", "slur/tie", "slur组GT", "slur组识", "歌词", "歌词*", "对位", "和弦", "和弦GT", "和弦识", "标题", "词曲", "GT_token", "识_token", "行", "音", "线"];
 const lines = [cols.join(",")];
 for (const x of rows) {
   if (x.fail) { lines.push([csv(x.name), "识别异常"].join(",")); continue; }
   lines.push([
     csv(x.name), p1(x.a), p1(x.o), p1(x.dc), x.gdot, x.rdot, p1(x.d), p1(x.s), x.sg, x.sr,
-    p1(x.ly), p1(x.lyNp), p1(x.al), p1(x.ti), p1(x.cr), x.g, x.r,
+    p1(x.ly), p1(x.lyNp), p1(x.al), x.ch === null ? "" : p1(x.ch), x.chG || "", x.chR || "", p1(x.ti), p1(x.cr), x.g, x.r,
     x.stats.rows, x.stats.notes, x.stats.bars,
   ].join(","));
 }
 const n = rows.filter((x) => !x.fail).length || 1;
 lines.push([
   "平均", p1(sum.a / n), p1(sum.o / n), p1(sum.dc / n), "", "", p1(sum.d / n), p1(sum.s / n), "", "",
-  p1(sum.ly / n), p1(sum.lyNp / n), p1(sum.al / n), p1(sum.ti / n), p1(sum.cr / n), "", "", "", "", "",
+  p1(sum.ly / n), p1(sum.lyNp / n), p1(sum.al / n),
+  sum.chN ? p1(sum.ch / sum.chN) : "", "", "", p1(sum.ti / n), p1(sum.cr / n), "", "", "", "", "",
 ].join(","));
 
 const outPath = join(process.cwd(), "measure-all.csv");

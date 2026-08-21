@@ -68,7 +68,9 @@ for (const [name, imgPath] of jobs) {
     add("patch 不 fallback", p.fallback ? "fallback" : null);
     add("patch 有改动", p.changed > 0 ? null : "changed=0");
     const count = (xml, tag) => (xml.match(new RegExp(`<${tag}[ />]`, "g")) || []).length;
-    const keep = ["print", "credit", "direction", "words", "barline", "attributes"];
+    // harmony 一并列入保全清单：和弦是 .jpwabc 装不下的信息，只活在底本里——patch 一旦
+    // 顺手删掉它，「导出 MusicXML」就把识别出的整套和弦丢了，而 jpwabc 那边看不出任何异样。
+    const keep = ["print", "credit", "direction", "words", "barline", "attributes", "harmony", "root-step", "kind"];
     const lost = keep.filter((t) => count(p.xml, t) !== count(base, t));
     add("底本节点保全", lost.length ? `变了: ${lost.join(", ")}` : null);
 

@@ -1,11 +1,12 @@
 // 识别 → 文本谱 回归：RecognizedScore 经 toPuText 出的原文，回解析后必须与识别结果逐项相等。
 //
-// 断言五条（两种方言各跑一遍）：
+// 断言六条（两种方言各跑一遍）：
 //   1. 产出的原文能被 sniffDialect 判回本方言（头部字段没写漏）；
 //   2. parsePu 无 error 级诊断；
 //   3. 回解析的音符序列（数字/八度/时值/附点/增时线数）与 flatten(rows[].nums) 逐项相等；
 //   4. 逐音符各段歌词与 JpNum.lyrics 相等（对位不错行）；
-//   5. meta.noteRanges[i] 切出的子串就是第 i 个音符 token（识别模式点选定位的正确性）。
+//   5. meta.noteRanges[i] 切出的子串就是第 i 个音符 token（识别模式点选定位的正确性）；
+//   6. 逐音符和弦（`"hx:…"`）与 JpNum.chord 相等，且总数不少一个。
 //
 // 用法：npm run build && node omr-pu-check.mjs [曲名子串...]（需本地 Edge）
 import { createServer } from "node:http";
@@ -134,6 +135,7 @@ for (const song of songs) {
                   });
                 }
                 got.push({
+                  chord: el.chord,
                   digit: el.sound === "rest" ? 0 : el.pitch,
                   octave: el.octave,
                   div: Math.round(Math.log2(el.duration / 4)),
@@ -149,7 +151,7 @@ for (const song of songs) {
         if (got.length !== flat.length) {
           problems.push(`音符数 ${got.length} ≠ 识别 ${flat.length}`);
         }
-        let noteBad = 0, lyricBad = 0, rangeBad = 0;
+        let noteBad = 0, lyricBad = 0, rangeBad = 0, chordBad = 0;
         for (let i = 0; i < Math.min(got.length, flat.length); i++) {
           const a = flat[i], b = got[i];
           if (a.digit !== b.digit || a.octave !== b.octave || a.div !== b.div
@@ -168,6 +170,10 @@ for (const song of songs) {
               if (lyricBad === 0) problems.push(`歌词 #${i} 段${v + 1}：识别「${want}」→ 回解析「${has}」`);
               lyricBad++;
             }
+          }
+          if ((a.chord ?? "") !== (b.chord ?? "")) {
+            if (chordBad === 0) problems.push(`和弦 #${i}：识别「${a.chord ?? ""}」→ 回解析「${b.chord ?? ""}」`);
+            chordBad++;
           }
           const r = meta.noteRanges[i];
           const token = r ? text.slice(r.from, r.to) : "";
@@ -189,6 +195,11 @@ for (const song of songs) {
           }
         }
         if (curveMarks !== wantCurves) problems.push(`弧线 ${curveMarks} 条，识别配对出 ${wantCurves} 条`);
+        // 和弦：识别出的每一个都要出现在原文里、回解析后仍挂在同一个音符上（上面逐项比过）。
+        // 这里再核一次总数，挡住「整批和弦被 emitter 漏写」这种回解析比不出来的情形。
+        const wantChords = flat.filter((n) => n.chord).length;
+        const gotChords = got.filter((n) => n.chord).length;
+        if (gotChords !== wantChords) problems.push(`和弦 ${gotChords} 个，识别有 ${wantChords} 个`);
         // 段落标记（Intro/副歌…）要挂成音符注释，不能丢
         const wantMarks = flat.filter((n) => n.sectionMark).length;
         if (annotations < wantMarks) problems.push(`段落标记 ${annotations} 个，识别有 ${wantMarks} 个`);
@@ -202,7 +213,8 @@ for (const song of songs) {
         if (noteBad) problems.push(`音符不符共 ${noteBad} 个`);
         if (lyricBad) problems.push(`歌词不符共 ${lyricBad} 个`);
         if (rangeBad) problems.push(`区间不符共 ${rangeBad} 个`);
-        out[dialect] = { problems, notes: flat.length, chars: text.length };
+        if (chordBad) problems.push(`和弦不符共 ${chordBad} 个`);
+        out[dialect] = { problems, notes: flat.length, chars: text.length, chords: wantChords };
       }
       return out;
     }, { b64, mime });
@@ -220,7 +232,7 @@ for (const song of songs) {
       console.log(`✗ ${tag}（${r.notes} 音符）`);
       for (const p of r.problems) console.log(`    ${p}`);
     } else {
-      console.log(`✓ ${tag}（${r.notes} 音符，${r.chars} 字）`);
+      console.log(`✓ ${tag}（${r.notes} 音符${r.chords ? `，${r.chords} 和弦` : ""}，${r.chars} 字）`);
     }
   }
 }
