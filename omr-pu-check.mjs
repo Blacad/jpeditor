@@ -122,7 +122,11 @@ for (const song of songs) {
               const cursors = v.lyrics.map(() => 0);
               for (const el of v.elements) {
                 if (el.kind === "sustain") {
-                  if (got.length) got[got.length - 1].augment += 1;
+                  if (got.length) {
+                    got[got.length - 1].augment += 1;
+                    // 增时线上方的和弦（长音里换和弦）：记下它挂在第几条增时线上
+                    if (el.chord) got[got.length - 1].extras.push({ tok: el.chord, k: got[got.length - 1].augment });
+                  }
                   continue;
                 }
                 if (el.kind !== "note") continue;
@@ -135,6 +139,7 @@ for (const song of songs) {
                   });
                 }
                 got.push({
+                  extras: [],
                   chord: el.chord,
                   digit: el.sound === "rest" ? 0 : el.pitch,
                   octave: el.octave,
@@ -175,6 +180,17 @@ for (const song of songs) {
             if (chordBad === 0) problems.push(`和弦 #${i}：识别「${a.chord ?? ""}」→ 回解析「${b.chord ?? ""}」`);
             chordBad++;
           }
+          // 长音里换的和弦：识别侧的 extraChords 要原样落到对应那条增时线上（拍位不许漂）
+          const wantExtra = (a.extraChords ?? []).map((e) => {
+            const baseBeats = (1 / Math.pow(2, a.div)) * (a.dot > 0 ? 1.5 : 1);
+            const k = Math.round(e.offset * (baseBeats + a.augment) - baseBeats) + 1;
+            return `${e.tok}@${Math.min(Math.max(k, 1), a.augment)}`;
+          }).join(",");
+          const gotExtra = b.extras.map((e) => `${e.tok}@${e.k}`).join(",");
+          if (wantExtra !== gotExtra) {
+            if (chordBad === 0) problems.push(`增时线和弦 #${i}：识别「${wantExtra}」→ 回解析「${gotExtra}」`);
+            chordBad++;
+          }
           const r = meta.noteRanges[i];
           const token = r ? text.slice(r.from, r.to) : "";
           if (!/^[0-9]/.test(token)) {
@@ -197,8 +213,8 @@ for (const song of songs) {
         if (curveMarks !== wantCurves) problems.push(`弧线 ${curveMarks} 条，识别配对出 ${wantCurves} 条`);
         // 和弦：识别出的每一个都要出现在原文里、回解析后仍挂在同一个音符上（上面逐项比过）。
         // 这里再核一次总数，挡住「整批和弦被 emitter 漏写」这种回解析比不出来的情形。
-        const wantChords = flat.filter((n) => n.chord).length;
-        const gotChords = got.filter((n) => n.chord).length;
+        const wantChords = flat.reduce((a, n) => a + (n.chord ? 1 : 0) + (n.extraChords?.length ?? 0), 0);
+        const gotChords = got.reduce((a, n) => a + (n.chord ? 1 : 0) + n.extras.length, 0);
         if (gotChords !== wantChords) problems.push(`和弦 ${gotChords} 个，识别有 ${wantChords} 个`);
         // 段落标记（Intro/副歌…）要挂成音符注释，不能丢
         const wantMarks = flat.filter((n) => n.sectionMark).length;
