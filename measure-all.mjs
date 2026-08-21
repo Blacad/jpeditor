@@ -192,6 +192,12 @@ function alignAcc(gt, rec) {
   return { acc: totW ? sum / totW : (r.size ? 0 : 1), detail: parts.join("/") || "无" };
 }
 
+// 和弦档的排除名单：这两首谱面印了**两套并行编配**（括号里另一套，「立定心志」页眉写明
+// 「括号里和弦是灵栖清泉编配」），同一个音符要挂两个和弦——番茄文本谱这个 GT 载体（以及
+// MusicXML 那路的 JpNum.chord）根本表达不了真值，拿它算准确率没有意义，故不计分。
+// 它们的 gt.tomato.pu 仍然生成，只是和弦那一档留空。
+const CHORD_GT_SKIP = new Set(["立定心志", "爱是不保留"]);
+
 // 和弦：按出现顺序取 `"hx:X"` 序列（番茄文本谱原文里和弦就写成音符后的这条注释）。
 // 位置正确性由序列顺序隐含保证——和弦挂错音符会让它与相邻记号换位、Levenshtein 立刻算进去。
 function chordSeq(puText) {
@@ -201,6 +207,7 @@ function chordSeq(puText) {
 async function findSongs() {
   const out = [];
   for (const name of (await readdir(TESTDATA, { withFileTypes: true })).filter((d) => d.isDirectory())) {
+    if (name.name === "pu") continue;   // 文本谱渲染夹具，不是识别用的歌谱
     const dir = join(TESTDATA, name.name);
     const files = await readdir(dir);
     // 优先图片；无图片的歌谱（如 PDF-only 的「耶稣普治」）取 .pdf，走同一 decodeToBinary(pdf) 管线。
@@ -209,7 +216,7 @@ async function findSongs() {
     if (!img || !gt) continue;
     if (filters.length && !filters.some((f) => name.name.includes(f))) continue;
     // 和弦 GT（可选）：一份人工核对过的番茄文本谱原文。.jpwabc 装不下和弦，只能另置载体。
-    const puGt = files.includes("gt.tomato.pu") ? join(dir, "gt.tomato.pu") : null;
+    const puGt = files.includes("gt.tomato.pu") && !CHORD_GT_SKIP.has(name.name) ? join(dir, "gt.tomato.pu") : null;
     out.push({ name: name.name, img: join(dir, img), gt: join(dir, gt), puGt });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, "zh"));

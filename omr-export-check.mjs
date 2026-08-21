@@ -26,6 +26,7 @@ const filter = process.argv[2] ?? "日光";
 const dirs = (await readdir("testdata", { withFileTypes: true })).filter((d) => d.isDirectory());
 const jobs = [];
 for (const d of dirs) {
+  if (d.name === "pu") continue;        // 文本谱渲染夹具，不是识别用的歌谱
   if (filter && !d.name.includes(filter)) continue;
   const files = await readdir(join("testdata", d.name));
   const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase()));
