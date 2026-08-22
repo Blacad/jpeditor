@@ -1,4 +1,4 @@
-// 识别模式无头校验：serve dist/，加载后用 window.__app.recognizeBytes 跑真实 OMR，
+// 识别模式无头校验：serve dist/，加载后用 window.__app.omr.recognizeBytes 跑真实 OMR，
 // 验证自动进入识别模式、二值图 image + 叠加层渲染，截图。
 // 用法: node shot-recog.mjs [outPng] [imgPath]
 import { readFile } from "node:fs/promises";
@@ -15,8 +15,8 @@ await loadApp(page, port);
 
 const result = await page.evaluate(async (bytes) => {
   const app = window.__app;
-  await app.recognizeBytes({ bytes: new Uint8Array(bytes), mime: "image/jpeg" });
-  // 新 UI 直调 recognizeBytes 不会揭开开始页覆盖层，这里手动揭开以便截到核对视图。
+  await app.omr.recognizeBytes({ bytes: new Uint8Array(bytes), mime: "image/jpeg" });
+  // 新 UI 直调 omr.recognizeBytes 不会揭开开始页覆盖层，这里手动揭开以便截到核对视图。
   document.getElementById("app")?.classList.remove("is-starting");
   const ss = document.getElementById("start-screen");
   if (ss) ss.hidden = true;
