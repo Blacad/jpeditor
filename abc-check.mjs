@@ -2,12 +2,11 @@
 // same engine as the app) and, when python3 + the original abc2xml.py are available, assert the
 // output is byte-identical (modulo whitespace / encoding-date) to the reference implementation.
 // Usage: node abc-check.mjs
-import { createServer } from "node:http";
 import { readFile, writeFile, mkdtemp } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { chromium } from "playwright";
+import { serveDist, launchPage, loadApp } from "./scripts/harness.mjs";
 
 const ORIG = join(process.env.HOME, "proj/zanmeigepu/abc2xml.py");
 const ZANMEI = join(process.env.HOME, "proj/zanmeigepu/zanmeigepu_score.abc");
@@ -41,16 +40,7 @@ K:Eb
 ` }],
 ];
 
-const MIME = { ".html":"text/html",".js":"text/javascript",".css":"text/css",".json":"application/json",".woff2":"font/woff2",".svg":"image/svg+xml",".wasm":"application/wasm",".mjs":"text/javascript" };
-const ROOT = join(process.cwd(), "dist");
-const server = createServer(async (req, res) => {
-  try { let p = decodeURIComponent((req.url ?? "/").split("?")[0]); if (p === "/") p = "/index.html";
-    const data = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" }); res.end(data);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+const { port, close: closeServer } = await serveDist();
 
 function canon(s){ return s.replace(/<\?xml[^>]*\?>/g,"").replace(/<!DOCTYPE[^>]*>/g,"")
   .replace(/<encoding-date>[^<]*<\/encoding-date>/g,"<encoding-date/>")
@@ -69,12 +59,8 @@ function diffClusters(a0, b0){
 const havePy = spawnSync("python3", ["-c", "import pyparsing"], { stdio: "ignore" }).status === 0
   && (await readFile(ORIG).then(() => true).catch(() => false));
 
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage();
-const errors = [];
-page.on("pageerror", (e) => errors.push(e.message));
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-await page.waitForTimeout(500);
+const { browser, page, pageErrors: errors } = await launchPage({ quiet: true });
+await loadApp(page, port);
 
 let fail = 0;
 const tmp = await mkdtemp(join(tmpdir(), "abc-check-"));
@@ -95,6 +81,6 @@ for (const [name, src] of FIXTURES) {
   else { console.log(`FAIL  ${name}: ${d.clusters} diff clusters, tail ${d.tail} (mine ${d.na} / ref ${d.nb})`); d.samples.forEach((s) => console.log("      " + s)); fail++; }
 }
 if (errors.length) { console.log("PAGE ERRORS:\n" + errors.join("\n")); fail++; }
-await browser.close(); server.close();
+await browser.close(); closeServer();
 console.log(fail ? `\n${fail} failure(s)` : "\nall passed");
 process.exit(fail ? 1 : 0);

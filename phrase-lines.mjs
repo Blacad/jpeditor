@@ -2,36 +2,23 @@
 // 用法：node phrase-lines.mjs <歌谱文件夹名子串>
 // 首次会跑 OMR 并把 musicxml 缓存到 .phrase-cache/，之后直接复用（改 phrase.ts 后重跑很快）；
 // PHRASE_FRESH=1 强制重新识别。
-import { createServer } from "node:http";
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import { extname, join } from "node:path";
+import { serveDist, launchPage, loadApp, mimeOf } from "./scripts/harness.mjs";
 
-const ROOT = join(process.cwd(), "dist");
 const TESTDATA = join(process.cwd(), "testdata");
 const CACHE = process.env.PHRASE_CACHE ?? join(process.cwd(), ".phrase-cache");
 const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp", ".webp"]);
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp", ".webp": "image/webp", ".pdf": "application/pdf" };
 
 const filter = process.argv[2] ?? "";
 const dirs = (await readdir(TESTDATA, { withFileTypes: true })).filter((d) => d.isDirectory() && d.name.includes(filter));
 if (!dirs.length) { console.log("没找到歌谱"); process.exit(1); }
 await mkdir(CACHE, { recursive: true });
 
-const server = createServer(async (req, res) => {
-  try { let p = decodeURIComponent((req.url ?? "/").split("?")[0]); if (p === "/") p = "/index.html";
-    const data = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" }); res.end(data);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-page.on("pageerror", (e) => console.log("pageerror:", e.message));
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-await page.waitForTimeout(600);
+const { port, close: closeServer } = await serveDist();
+const { browser, page } = await launchPage({ viewport: { width: 1280, height: 900 } });
+await loadApp(page, port);
 
 for (const d of dirs) {
   const dir = join(TESTDATA, d.name);
@@ -44,7 +31,7 @@ for (const d of dirs) {
     xml = await readFile(cacheFile, "utf8");
   } else {
     const b64 = Buffer.from(await readFile(join(dir, img))).toString("base64");
-    const mime = MIME[extname(img).toLowerCase()] ?? "image/jpeg";
+    const mime = mimeOf(img);
     xml = await page.evaluate(async ({ b64, mime }) => {
       const omr = await window.__omr;
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -64,7 +51,7 @@ for (const d of dirs) {
   console.log(d.name);
   report(out.phrase);
 }
-await browser.close(); server.close();
+await browser.close(); closeServer();
 
 // 逐「排版行」（以 $(..) 结尾）报小节数/格数/歌词。
 // 歌词按 .Words 的 `W<v>@<小节>,<音符>:` 锚点顺序铺到音符上（`/` = 续记号，占一个音符位）。

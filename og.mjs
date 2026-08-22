@@ -2,33 +2,14 @@
 // Serves dist/, renders the sample score, composes a branded 1200×630 card, screenshots it.
 // Usage: node og.mjs            (uses built-in sample score)
 //        node og.mjs --xml a.musicxml   (render a mixed MusicXML score instead)
-import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
 
-const ROOT = join(process.cwd(), "dist");
-const MIME = {
-  ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
-  ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml",
-  ".otf": "font/otf",
-};
-const server = createServer(async (req, res) => {
-  try {
-    let p = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    if (p === "/") p = "/index.html";
-    const data = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" });
-    res.end(data);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+import { serveDist, launchPage, loadApp } from "./scripts/harness.mjs";
 
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1200, height: 630 }, deviceScaleFactor: 2 });
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-await page.waitForTimeout(700);
+const { port, close: closeServer } = await serveDist();
+
+const { browser, page } = await launchPage({ viewport: { width: 1200, height: 630 }, deviceScaleFactor: 2 });
+await loadApp(page, port);
 
 const xmlIdx = process.argv.indexOf("--xml");
 const xmlPath = xmlIdx !== -1 ? process.argv[xmlIdx + 1] : null;
@@ -89,4 +70,4 @@ await page.waitForTimeout(300);
 await page.locator("#og-card > div").screenshot({ path: "public/og-image.png" });
 console.log("wrote public/og-image.png (1200×630 @2x)");
 await browser.close();
-server.close();
+closeServer();

@@ -9,63 +9,24 @@
 //   6. 逐音符和弦（`"hx:…"`）与 JpNum.chord 相等，且总数不少一个。
 //
 // 用法：npm run build && node omr-pu-check.mjs [曲名子串...]（需本地 Edge）
-import { createServer } from "node:http";
-import { readFile, readdir } from "node:fs/promises";
-import { extname, join } from "node:path";
-import { chromium } from "playwright";
+import { readFile } from "node:fs/promises";
 
-const ROOT = join(process.cwd(), "dist");
-const TESTDATA = join(process.cwd(), "testdata");
-const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp", ".webp"]);
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp", ".webp": "image/webp", ".pdf": "application/pdf" };
-const filters = process.argv.slice(2);
+import { serveDist, launchPage, loadApp, findSongFixtures, mimeOf } from "./scripts/harness.mjs";
 
-function serveDist() {
-  const server = createServer(async (req, res) => {
-    const path = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    const file = join(ROOT, path === "/" ? "index.html" : path.replace(/^\//, ""));
-    try {
-      res.writeHead(200, { "Content-Type": MIME[extname(file).toLowerCase()] ?? "application/octet-stream" });
-      res.end(await readFile(file));
-    } catch {
-      res.writeHead(404).end("not found");
-    }
-  });
-  return new Promise((r) => server.listen(0, () => r(server)));
-}
-
-/** 每个歌谱文件夹取一张图片（没有就取 PDF），与 measure-all.mjs 同一批夹具。 */
-async function findSongs() {
-  const out = [];
-  for (const d of await readdir(TESTDATA, { withFileTypes: true })) {
-    if (!d.isDirectory() || d.name === "pu") continue;
-    if (filters.length && !filters.some((f) => d.name.includes(f))) continue;
-    const files = await readdir(join(TESTDATA, d.name));
-    const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase()))
-      ?? files.find((f) => extname(f).toLowerCase() === ".pdf");
-    if (img) out.push({ name: d.name, img: join(TESTDATA, d.name, img) });
-  }
-  return out;
-}
-
-const songs = await findSongs();
+const songs = await findSongFixtures(process.argv.slice(2));
 if (!songs.length) {
   console.log("testdata/ 下没找到可识别的歌谱文件夹");
   process.exit(0);
 }
-const server = await serveDist();
-const port = server.address().port;
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage();
-page.on("pageerror", (e) => console.log("  [pageerror]", String(e).slice(0, 160)));
+const { port, close: closeServer } = await serveDist();
+const { browser, page } = await launchPage();
 
 let fail = 0;
 for (const song of songs) {
   // 同 measure-all.mjs：每首重载页面，免得 App/Score 在同一 page 里串味。
-  await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(800);
+  await loadApp(page, port);
   const b64 = Buffer.from(await readFile(song.img)).toString("base64");
-  const mime = MIME[extname(song.img).toLowerCase()] ?? "image/jpeg";
+  const mime = mimeOf(song.img);
   let res;
   try {
     res = await page.evaluate(async ({ b64, mime }) => {
@@ -254,6 +215,6 @@ for (const song of songs) {
 }
 
 await browser.close();
-server.close();
+closeServer();
 console.log(fail ? `\n${fail} 项未通过` : `\n全部通过（${songs.length} 首 × 2 方言）`);
 process.exit(fail ? 1 : 0);

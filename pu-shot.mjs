@@ -2,32 +2,10 @@
 //
 // 用法：npm run build && node pu-shot.mjs [曲名子串] [--slide]
 // 输出 /tmp/pu-<曲名>-p<页>.png，并打印页数与控制台错误。
-import { createServer } from "node:http";
 import { readFileSync, readdirSync } from "node:fs";
-import { join, extname } from "node:path";
-import { chromium } from "playwright";
+import { join } from "node:path";
+import { serveDist, launchPage, loadApp } from "./scripts/harness.mjs";
 
-const MIME = {
-  ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
-  ".json": "application/json", ".woff2": "font/woff2", ".woff": "font/woff",
-  ".ttf": "font/ttf", ".svg": "image/svg+xml", ".png": "image/png",
-  ".wasm": "application/wasm", ".map": "application/json",
-};
-
-function serveDist() {
-  const server = createServer((req, res) => {
-    const path = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    const file = join("dist", path === "/" ? "index.html" : path.replace(/^\//, ""));
-    try {
-      const body = readFileSync(file);
-      res.writeHead(200, { "Content-Type": MIME[extname(file)] ?? "application/octet-stream" });
-      res.end(body);
-    } catch {
-      res.writeHead(404).end("not found");
-    }
-  });
-  return new Promise((resolve) => server.listen(0, () => resolve(server)));
-}
 
 const args = process.argv.slice(2);
 const slide = args.includes("--slide");
@@ -39,13 +17,9 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const server = await serveDist();
-const port = server.address().port;
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
-const errors = [];
-page.on("pageerror", (e) => errors.push(String(e)));
-await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle" });
+const { port, close: closeServer } = await serveDist();
+const { browser, page, pageErrors: errors } = await launchPage({ viewport: { width: 1200, height: 1000 }, quiet: true });
+await loadApp(page, port);
 
 for (const file of files) {
   const name = file.replace(/\.[^.]+$/, "");
@@ -90,7 +64,7 @@ for (const file of files) {
     await page.setViewportSize({ width: Math.ceil(info.w), height: Math.ceil(info.h) });
     await page.screenshot({ path: `/tmp/pu-${name}${slide ? "-slide" : ""}-p${i + 1}.png` });
   }
-  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle" });
+  await loadApp(page, port);
 
   console.log(
     `${name}: ${info.dialect} ${info.songs}首 ${info.pages}页 ${info.notes}音符 ${info.w}×${info.h}` +
@@ -108,5 +82,5 @@ if (errors.length) {
   for (const e of errors.slice(0, 5)) console.log("  " + e);
 }
 await browser.close();
-server.close();
+closeServer();
 process.exit(errors.length ? 1 : 0);

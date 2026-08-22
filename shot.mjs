@@ -2,45 +2,13 @@
 // screenshot, and dump diagnostics.
 // Usage: node shot.mjs [outPng] [--edit] [--xml <path>]
 //   --xml <path>   render MusicXML via MixedPainter instead of normal JP score
-import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import { serveDist, launchPage, loadApp } from "./scripts/harness.mjs";
 
-const ROOT = join(process.cwd(), "dist");
-const MIME = {
-  ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
-  ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml",
-};
-
-const server = createServer(async (req, res) => {
-  try {
-    let p = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    if (p === "/") p = "/index.html";
-    const data = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" });
-    res.end(data);
-  } catch {
-    res.writeHead(404);
-    res.end("not found");
-  }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
-
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-const errors = [];
-page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
-page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
+const { port, close: closeServer } = await serveDist();
+const { browser, page, errors } = await launchPage({ viewport: { width: 1280, height: 900 }, quiet: true });
 // 新 UI 启动进开始页（#start-screen 覆盖层），揭开工作区以便截到谱面。
-await page.evaluate(() => {
-  document.getElementById("app")?.classList.remove("is-starting");
-  const ss = document.getElementById("start-screen");
-  if (ss) ss.hidden = true;
-});
-await page.waitForTimeout(700);
+await loadApp(page, port, { reveal: true });
 
 // --xml mode: render MusicXML via MixedPainter
 const xmlArgIdx = process.argv.indexOf("--xml");
@@ -107,4 +75,4 @@ if (xmlPath) {
   console.log("screenshot:", out);
 }
 await browser.close();
-server.close();
+closeServer();

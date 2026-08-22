@@ -3,42 +3,17 @@
 // 断言的是「同一份原文，经两条路得出同一首曲子」：
 //   直接解析出的音符序列  vs  转成 Score 后再读回来的音符序列
 // 用法：npm run build && node pu-export-check.mjs [曲名子串]
-import { createServer } from "node:http";
 import { readFileSync, readdirSync } from "node:fs";
-import { join, extname } from "node:path";
-import { chromium } from "playwright";
+import { join } from "node:path";
+import { serveDist, launchPage, loadApp } from "./scripts/harness.mjs";
 
-const MIME = {
-  ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
-  ".json": "application/json", ".woff2": "font/woff2", ".woff": "font/woff",
-  ".ttf": "font/ttf", ".svg": "image/svg+xml", ".png": "image/png",
-  ".wasm": "application/wasm", ".map": "application/json",
-};
-
-function serveDist() {
-  const server = createServer((req, res) => {
-    const path = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    const file = join("dist", path === "/" ? "index.html" : path.replace(/^\//, ""));
-    try {
-      res.writeHead(200, { "Content-Type": MIME[extname(file)] ?? "application/octet-stream" });
-      res.end(readFileSync(file));
-    } catch {
-      res.writeHead(404).end("not found");
-    }
-  });
-  return new Promise((r) => server.listen(0, () => r(server)));
-}
 
 const filter = process.argv[2] ?? "";
 const DIR = "testdata/pu";
 const files = readdirSync(DIR).filter((f) => /\.(pu|jps)$/i.test(f) && f.includes(filter));
-const server = await serveDist();
-const port = server.address().port;
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage();
-const errors = [];
-page.on("pageerror", (e) => errors.push(String(e)));
-await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle" });
+const { port, close: closeServer } = await serveDist();
+const { browser, page, pageErrors: errors } = await launchPage({ quiet: true });
+await loadApp(page, port);
 
 let fail = 0;
 for (const file of files) {
@@ -152,5 +127,5 @@ if (errors.length) {
   fail++;
 }
 await browser.close();
-server.close();
+closeServer();
 process.exit(fail ? 1 : 0);

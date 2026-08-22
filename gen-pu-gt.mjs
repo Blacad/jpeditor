@@ -2,26 +2,14 @@
 // .jpwabc 装不下和弦，故另置这份载体；measure-all.mjs 的「和弦」档比对它里面的 `"hx:X"` 序列。
 // **产出的是底稿，必须对着原图人工核对和弦再当 GT 用**——识别错的地方要手工改对，否则等于拿
 // 识别结果给自己打分。用法：npm run build && node gen-pu-gt.mjs [曲名子串...]（需本地 Edge）
-import { createServer } from "node:http";
 import { readFile, readdir, writeFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import { extname, join } from "node:path";
+import { serveDist, launchPage, loadApp, mimeOf } from "./scripts/harness.mjs";
 
-const ROOT = join(process.cwd(), "dist"), TESTDATA = join(process.cwd(), "testdata");
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp", ".webp": "image/webp", ".pdf": "application/pdf" };
+const TESTDATA = join(process.cwd(), "testdata");
 const filters = process.argv.slice(2);
 
-const server = createServer(async (req, res) => {
-  try {
-    let p = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    if (p === "/") p = "/index.html";
-    const d = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" });
-    res.end(d);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+const { port, close: closeServer } = await serveDist();
 
 const songs = [];
 for (const d of await readdir(TESTDATA, { withFileTypes: true })) {
@@ -34,14 +22,12 @@ for (const d of await readdir(TESTDATA, { withFileTypes: true })) {
 }
 songs.sort((a, b) => a.name.localeCompare(b.name, "zh"));
 
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+const { browser, page } = await launchPage({ viewport: { width: 1280, height: 900 } });
 for (const song of songs) {
   // 每首重载页面：App/Score 在同一 page 里复用会串味（同 measure-all.mjs）。
-  await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(700);
+  await loadApp(page, port);
   const b64 = Buffer.from(await readFile(song.img)).toString("base64");
-  const mime = MIME[extname(song.img).toLowerCase()] ?? "image/jpeg";
+  const mime = mimeOf(song.img);
   const text = await page.evaluate(async ({ b64, mime }) => {
     const omr = await window.__omr;
     const bin = await omr.decodeToBinary(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), mime);
@@ -53,4 +39,4 @@ for (const song of songs) {
   console.log(`${song.name}: ${text.split("\n").length} 行，${n} 个和弦 → ${out}`);
 }
 await browser.close();
-server.close();
+closeServer();

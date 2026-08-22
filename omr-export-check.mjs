@@ -2,50 +2,21 @@
 //  (1) 未改动时导出 == 识别原文；(2) 改一处后 patch 只动该处、<print>/<credit>/<direction> 一个不少；
 //  (3) 版面注入后「一行几个小节」与识别出的行结构（RecognizedScore.rows）完全一致。
 // 用法：npm run build && node omr-export-check.mjs [曲名子串]
-import { createServer } from "node:http";
-import { readFile, readdir } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import { serveDist, launchPage, loadApp, findSongFixtures, imageArg } from "./scripts/harness.mjs";
 
-const ROOT = join(process.cwd(), "dist");
-const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp", ".webp"]);
-const MIME = { ".html":"text/html",".js":"text/javascript",".mjs":"text/javascript",".css":"text/css",".json":"application/json",".woff2":"font/woff2",".svg":"image/svg+xml",".wasm":"application/wasm",".jpg":"image/jpeg",".jpeg":"image/jpeg",".png":"image/png",".bmp":"image/bmp",".webp":"image/webp",".pdf":"application/pdf" };
-const server = createServer(async (req, res) => {
-  try {
-    let p = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    if (p === "/") p = "/index.html";
-    const data = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" });
-    res.end(data);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+const { port, close: closeServer } = await serveDist();
 
-const filter = process.argv[2] ?? "日光";
-const dirs = (await readdir("testdata", { withFileTypes: true })).filter((d) => d.isDirectory());
-const jobs = [];
-for (const d of dirs) {
-  if (d.name === "pu") continue;        // 文本谱渲染夹具，不是识别用的歌谱
-  if (filter && !d.name.includes(filter)) continue;
-  const files = await readdir(join("testdata", d.name));
-  const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase()));
-  if (img) jobs.push([d.name, join("testdata", d.name, img)]);
-}
+// 默认只跑「日光之下」：这套断言逐字比对导出原文，一首就够，全跑太慢。
+const jobs = (await findSongFixtures([process.argv[2] ?? "日光"], { allowPdf: false }))
+  .map((f) => [f.name, f.img]);
 if (!jobs.length) { console.log("没有图片夹具"); process.exit(1); }
 
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage();
-const errors = [];
-page.on("pageerror", (e) => errors.push(e.message));
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-await page.waitForTimeout(500);
+const { browser, page, pageErrors: errors } = await launchPage({ quiet: true });
+await loadApp(page, port);
 
 let fail = 0;
 for (const [name, imgPath] of jobs) {
-  const bytes = await readFile(imgPath);
-  const b64 = bytes.toString("base64");
-  const mime = MIME[extname(imgPath).toLowerCase()] ?? "image/png";
+  const { b64, mime } = await imageArg(imgPath);
   const checks = await page.evaluate(async ({ b64, mime }) => {
     const omr = await window.__omr;
     const X = await window.__xmlout;
@@ -163,6 +134,6 @@ for (const [name, imgPath] of jobs) {
 }
 if (errors.length) { console.log("PAGE ERRORS:\n" + errors.join("\n")); fail++; }
 await browser.close();
-server.close();
+closeServer();
 console.log(fail ? `\n${fail} 首失败` : "\n全部通过");
 process.exit(fail ? 1 : 0);

@@ -4,22 +4,13 @@
 //   node measure-all.mjs              # 全部歌谱
 //   node measure-all.mjs 世上 日光    # 仅文件夹名含这些子串的
 // 需先 npm run build 出 dist + 本地 Edge。
-import { createServer } from "node:http";
 import { readFile, readdir, writeFile } from "node:fs/promises";
-import { extname, join, normalize, basename } from "node:path";
-import { chromium } from "playwright";
+import { extname, join, basename } from "node:path";
+import { serveDist, launchPage, loadApp, decodeJpwabc, mimeOf } from "./scripts/harness.mjs";
 
-const ROOT = join(process.cwd(), "dist");
 const TESTDATA = join(process.cwd(), "testdata");
 const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp", ".webp"]);
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp", ".webp": "image/webp", ".pdf": "application/pdf" };
 const filters = process.argv.slice(2);
-
-function decodeJpwabc(buf) {
-  if (buf[0] === 0xff && buf[1] === 0xfe) return Buffer.from(buf.slice(2)).toString("utf16le");
-  if (buf[0] === 0xfe && buf[1] === 0xff) { const s = Buffer.from(buf.slice(2)); s.swap16(); return s.toString("utf16le"); }
-  return buf.toString("utf8");
-}
 
 // 逐音符粘性 token。jpwabc 音符间可无空格；下划线(_)与附点(.)顺序不固定(GT 自身混用 6,_./2._)，
 // 故用 [_.]* 一并吞、各自计数。一个音 → N<digit>o<octave>u<下划线数>(+附点)，增时线 '-' 单列、小节线 '|'。
@@ -222,35 +213,21 @@ async function findSongs() {
   return out.sort((a, b) => a.name.localeCompare(b.name, "zh"));
 }
 
-const server = createServer(async (req, res) => {
-  try { let p = decodeURIComponent((req.url ?? "/").split("?")[0]); if (p === "/") p = "/index.html";
-    const data = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" }); res.end(data);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
-
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-const errors = [];
-page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
-page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-await page.waitForTimeout(800);
+const { port, close: closeServer } = await serveDist();
+const { browser, page, errors } = await launchPage({ viewport: { width: 1280, height: 900 }, quiet: true });
+await loadApp(page, port);
 
 const songs = await findSongs();
-if (!songs.length) { console.log("testdata/ 下没找到 图片+jpwabc 的歌谱文件夹"); await browser.close(); server.close(); process.exit(0); }
+if (!songs.length) { console.log("testdata/ 下没找到 图片+jpwabc 的歌谱文件夹"); await browser.close(); closeServer(); process.exit(0); }
 
 const rows = [];
 const sum = { a: 0, o: 0, d: 0, dc: 0, s: 0, ly: 0, lyNp: 0, al: 0, ti: 0, cr: 0, ch: 0, chN: 0 };
 for (const song of songs) {
   // 每首重载页面：App/Score 在同一 page 里复用会串味——实测「爱是不保留」（带 |: :| 反复+两段词）
   // 单跑 slur/歌词 100%，跟在别的歌谱后面跑就掉到 60%/42%。重载几秒的代价换基线可复现。
-  await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(800);
+  await loadApp(page, port);
   errors.length = 0;
-  const mime = MIME[extname(song.img).toLowerCase()] ?? "image/jpeg";
+  const mime = mimeOf(song.img);
   const b64 = Buffer.from(await readFile(song.img)).toString("base64");
   let rec;
   try {
@@ -322,4 +299,4 @@ console.log(out);
 console.log(`已写入 ${outPath}`);
 
 await browser.close();
-server.close();
+closeServer();

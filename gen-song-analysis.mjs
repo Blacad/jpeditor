@@ -3,21 +3,13 @@
 //   原图→二值图 → 音符(逐格数字 rec，vs GT) → 歌词(切块压缩→48px二值条→整块 rec，含「祂」等)。
 // 用法：npm run build && node gen-song-analysis.mjs <歌谱名> [out.html]   （需本地 Edge，建议工作树为 v6 构建）
 //   <歌谱名> 为 testdata/ 下歌谱目录名（可子串匹配）；命中多个取第一个。缺省时列出可选歌谱。
-import { createServer } from "node:http";
 import { readFile, writeFile, readdir } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import { join } from "node:path";
+import { serveDist, launchPage, loadApp, decodeJpwabc } from "./scripts/harness.mjs";
 
-const ROOT = join(process.cwd(), "dist");
 const TESTDATA = join(process.cwd(), "testdata");
 const FILTER = process.argv[2] || "";
-const MIME = { ".html":"text/html",".js":"text/javascript",".mjs":"text/javascript",".css":"text/css",".json":"application/json",".woff2":"font/woff2",".svg":"image/svg+xml",".wasm":"application/wasm" };
 
-function decodeJpwabc(buf) {
-  if (buf[0] === 0xff && buf[1] === 0xfe) return Buffer.from(buf.slice(2)).toString("utf16le");
-  if (buf[0] === 0xfe && buf[1] === 0xff) { const s = Buffer.from(buf.slice(2)); s.swap16(); return s.toString("utf16le"); }
-  return buf.toString("utf8");
-}
 // GT .Voice 里的数字序列（0-7，按出现序；用于与识别逐格对齐）
 function gtDigits(text) {
   const outD = []; let inV = false;
@@ -50,11 +42,9 @@ const song = (await findSongs(FILTER))[0];
 if (!song) { console.log(`未找到匹配「${FILTER}」的歌谱。可选：\n  ` + all.map(s => s.name).join("\n  ")); process.exit(1); }
 const OUT = process.argv[3] || `omr-analysis-${song.name}.html`;
 
-const server = createServer(async (q,r)=>{try{let p=decodeURIComponent((q.url??"/").split("?")[0]);if(p==="/")p="/index.html";const d=await readFile(join(ROOT,normalize(p)));r.writeHead(200,{"content-type":MIME[extname(p)]??"application/octet-stream"});r.end(d);}catch{r.writeHead(404);r.end("nf");}});
-await new Promise(r=>server.listen(0,r));
-const port=server.address().port;
-const browser=await chromium.launch({channel:"msedge",headless:true});
-const page=await browser.newPage({viewport:{width:1400,height:1000}}); await page.goto(`http://localhost:${port}/`,{waitUntil:"networkidle"}); await page.waitForTimeout(400);
+const { port, close: closeServer } = await serveDist();
+const { browser, page } = await launchPage({ viewport: { width: 1400, height: 1000 } });
+await loadApp(page, port);
 
 const data = [];
 {
@@ -125,7 +115,7 @@ const data = [];
   data.push({name:song.name, isPdf:mime==="application/pdf", ...d});
   console.log(`  ${song.name}: 音符 ${(d.noteAcc*100).toFixed(1)}% (识别${d.recCount}/GT${d.gtCount}, 编辑距离${d.editDist}), 歌词条${d.strips.length}`);
 }
-await browser.close(); server.close();
+await browser.close(); closeServer();
 
 // ---------- 组装 HTML ----------
 const esc=s=>String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));

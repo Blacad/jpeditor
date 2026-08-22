@@ -1,24 +1,17 @@
 // 生成「简谱歌词+标点识别算法」图解 HTML：用 日光之下 跑真实管线，
 // 借 window.__lyricTrace 抓每步 I/O，裁真实图片区域 + 画叠加框，产出 lyric-algo.html。
 // 用法：npm run build && node gen-lyric-doc.mjs   （需本地 Edge）
-import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import { join } from "node:path";
+import { serveDist, launchPage, loadApp } from "./scripts/harness.mjs";
 
-const ROOT = join(process.cwd(), "dist");
 // 可选参数：node gen-lyric-doc.mjs [图片路径] [输出html]（默认 日光之下）
 const IMG = process.argv[2] || "testdata/日光之下/日光之下简谱.jpg";
 const OUT = process.argv[3] || "lyric-algo.html";
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".wasm": "application/wasm" };
 
-const server = createServer(async (q, r) => { try { let p = decodeURIComponent((q.url ?? "/").split("?")[0]); if (p === "/") p = "/index.html"; const d = await readFile(join(ROOT, normalize(p))); r.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" }); r.end(d); } catch { r.writeHead(404); r.end("nf"); } });
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-await page.waitForTimeout(400);
+const { port, close: closeServer } = await serveDist();
+const { browser, page } = await launchPage({ viewport: { width: 1400, height: 1000 } });
+await loadApp(page, port);
 
 const jpgB64 = Buffer.from(await readFile(IMG)).toString("base64");
 const data = await page.evaluate(async ({ b64 }) => {
@@ -92,7 +85,7 @@ const data = await page.evaluate(async ({ b64 }) => {
   return out;
 }, { b64: jpgB64 });
 
-await browser.close(); server.close();
+await browser.close(); closeServer();
 
 // ---- 组装 HTML ----
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));

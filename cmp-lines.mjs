@@ -1,20 +1,11 @@
 // 对比 OMR 识别结果的分行与 GT 分行是否对得上。用法：node cmp-lines.mjs [名称过滤...]
-import { createServer } from "node:http";
 import { readFile, readdir } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import { extname, join } from "node:path";
+import { serveDist, launchPage, loadApp, decodeJpwabc, mimeOf } from "./scripts/harness.mjs";
 
-const ROOT = join(process.cwd(), "dist");
 const TESTDATA = join(process.cwd(), "testdata");
 const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp", ".webp"]);
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp", ".webp": "image/webp" };
 const filters = process.argv.slice(2);
-
-function decodeJpwabc(buf) {
-  if (buf[0] === 0xff && buf[1] === 0xfe) return Buffer.from(buf.slice(2)).toString("utf16le");
-  if (buf[0] === 0xfe && buf[1] === 0xff) { const s = Buffer.from(buf.slice(2)); s.swap16(); return s.toString("utf16le"); }
-  return buf.toString("utf8");
-}
 
 // 取 .Voice 段各「行」（以 $(...) 换行标记分行），每行数其小节数（| 分隔符个数）。
 function voiceLineMeasures(text) {
@@ -44,24 +35,13 @@ async function findSongs() {
   return out;
 }
 
-const server = createServer(async (req, res) => {
-  try {
-    let p = decodeURIComponent(req.url.split("?")[0]); if (p === "/") p = "/index.html";
-    const data = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" }); res.end(data);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
-
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-await page.waitForTimeout(800);
+const { port, close: closeServer } = await serveDist();
+const { browser, page } = await launchPage({ viewport: { width: 1280, height: 900 } });
+await loadApp(page, port);
 
 const songs = await findSongs();
 for (const song of songs) {
-  const mime = MIME[extname(song.img).toLowerCase()] ?? "image/jpeg";
+  const mime = mimeOf(song.img);
   const b64 = Buffer.from(await readFile(song.img)).toString("base64");
   let rec;
   try {
@@ -90,4 +70,4 @@ for (const song of songs) {
 }
 
 await browser.close();
-server.close();
+closeServer();

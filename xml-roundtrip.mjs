@@ -3,24 +3,11 @@
 //   R 组 — 全量序列化往返：.jpwabc → MusicXML → Score → MusicXML 的定点性与逐字段一致。
 //   L 组 — 版面注入：分行严格沿用底本 <print>，宽度/坐标合法，且不改动任何音乐内容。
 // 用法：npm run build && node xml-roundtrip.mjs [曲名子串]
-import { createServer } from "node:http";
-import { readFile, readdir } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { chromium } from "playwright";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { serveDist, launchPage, loadApp, readJpwabc } from "./scripts/harness.mjs";
 
-const MIME = { ".html":"text/html",".js":"text/javascript",".css":"text/css",".json":"application/json",".woff2":"font/woff2",".svg":"image/svg+xml",".wasm":"application/wasm",".mjs":"text/javascript" };
-const ROOT = join(process.cwd(), "dist");
-const server = createServer(async (req, res) => {
-  try {
-    let p = decodeURIComponent((req.url ?? "/").split("?")[0]);
-    if (p === "/") p = "/index.html";
-    const data = await readFile(join(ROOT, normalize(p)));
-    res.writeHead(200, { "content-type": MIME[extname(p)] ?? "application/octet-stream" });
-    res.end(data);
-  } catch { res.writeHead(404); res.end("not found"); }
-});
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+const { port, close: closeServer } = await serveDist();
 
 // 夹具：testdata/<曲名>/<曲名>.jpwabc
 const filter = process.argv[2];
@@ -31,21 +18,12 @@ for (const d of dirs) {
   const files = await readdir(join("testdata", d.name));
   const jp = files.find((f) => f.endsWith(".jpwabc"));
   if (!jp) continue;
-  // .jpwabc 存的是 UTF-16LE + BOM（见 editor/fileio.ts），BOM 探测后再解码。
-  const buf = await readFile(join("testdata", d.name, jp));
-  const text = buf[0] === 0xff && buf[1] === 0xfe
-    ? buf.subarray(2).toString("utf16le")
-    : buf.toString("utf-8").replace(/^﻿/, "");
-  fixtures.push([d.name, text]);
+  fixtures.push([d.name, await readJpwabc(join("testdata", d.name, jp))]);
 }
 if (!fixtures.length) { console.log("没有夹具"); process.exit(1); }
 
-const browser = await chromium.launch({ channel: "msedge", headless: true });
-const page = await browser.newPage();
-const errors = [];
-page.on("pageerror", (e) => errors.push(e.message));
-await page.goto(`http://localhost:${port}/`, { waitUntil: "networkidle" });
-await page.waitForTimeout(500);
+const { browser, page, pageErrors: errors } = await launchPage({ quiet: true });
+await loadApp(page, port);
 
 // ABC 底本：abc2xml 转出的 MusicXML 也是「比 .jpwabc 信息多」的底本，patch 同样要保全它。
 const ABC_FIXTURE = `X:1
@@ -330,6 +308,6 @@ for (const r of results) {
 }
 if (errors.length) { console.log("PAGE ERRORS:\n" + errors.join("\n")); fail++; }
 await browser.close();
-server.close();
+closeServer();
 console.log(fail ? `\n${fail} 首失败 / 共 ${results.length}` : `\n全部通过（${results.length} 首）`);
 process.exit(fail ? 1 : 0);
